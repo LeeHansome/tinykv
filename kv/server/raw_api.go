@@ -69,6 +69,7 @@ func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*
 		})
 		iterCF.Next()
 	}
+	defer reader.Close()
 	defer iterCF.Close()
 	return result, nil
 }

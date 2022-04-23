@@ -45,16 +45,14 @@ func (s *StandAloneStorage) Stop() error {
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
 	return standAloneReader{
-		inner:     s,
-		iterCount: 0,
-		txn:       s.engines.Kv.NewTransaction(false),
+		inner: s,
+		txn:   s.engines.Kv.NewTransaction(false),
 	}, nil
 }
 
 type standAloneReader struct {
-	txn       *badger.Txn
-	inner     *StandAloneStorage
-	iterCount int
+	txn   *badger.Txn
+	inner *StandAloneStorage
 }
 
 func (s standAloneReader) GetCF(cf string, key []byte) ([]byte, error) {
@@ -69,14 +67,10 @@ func (s standAloneReader) GetCF(cf string, key []byte) ([]byte, error) {
 }
 
 func (s standAloneReader) IterCF(cf string) engine_util.DBIterator {
-	s.iterCount += 1
 	return engine_util.NewCFIterator(cf, s.txn)
 }
 
 func (s standAloneReader) Close() {
-	if s.iterCount > 0 {
-		panic("Unclosed iterator")
-	}
 	s.txn.Discard()
 }
 
