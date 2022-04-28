@@ -16,8 +16,9 @@ package raft
 
 import (
 	"errors"
-
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"math/rand"
+	"time"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -165,52 +166,169 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	prs := make(map[uint64]*Progress)
+	for _, p := range c.peers {
+		prs[p] = &Progress{}
+	}
+	r := &Raft{
+		id:               c.ID,
+		electionTimeout:  c.ElectionTick,
+		heartbeatTimeout: c.HeartbeatTick,
+		RaftLog:          newLog(c.Storage),
+		Prs:              prs,
+		votes:            map[uint64]bool{},
+	}
+	return r
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	switch r.State {
+	case StateCandidate:
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgRequestVote, From: r.id, To: to, Term: r.Term,
+		})
+	}
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	r.msgs = append(r.msgs, pb.Message{
+		Term: r.Term, From: r.id, To: to, MsgType: pb.MessageType_MsgHeartbeat,
+	})
 }
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	r.electionElapsed += 1
+	r.heartbeatElapsed += 1
+	switch r.State {
+	case StateLeader:
+		if r.heartbeatElapsed >= r.heartbeatTimeout {
+			for p := range r.Prs {
+				if p == r.id {
+					continue
+				}
+				r.sendHeartbeat(p)
+			}
+		}
+	default:
+		et := 10
+		if r.electionElapsed > r.electionTimeout {
+			r.becomeCandidate()
+			for p := range r.Prs {
+				if p == r.id {
+					continue
+				}
+				r.sendAppend(p)
+			}
+			r.electionElapsed = 0
+			rand.Seed(time.Now().UnixNano())
+			r.electionTimeout = et + rand.Intn(et)
+		}
+	}
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
-	// Your Code Here (2A).
+	r.Term = term
+	r.Lead = lead
+	r.State = StateFollower
+	r.Vote = 0
+	r.votes = map[uint64]bool{}
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	r.votes[r.id] = true
+	r.Vote = r.id
+	r.Term += 1
+	r.State = StateCandidate
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	r.State = StateLeader
 }
 
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
+	if r.Term < m.Term {
+		r.becomeFollower(m.Term, m.From)
+		//return nil
+	}
 	switch r.State {
 	case StateFollower:
+		switch m.MsgType {
+		case pb.MessageType_MsgHup:
+			r.processMsgHup()
+		case pb.MessageType_MsgRequestVote:
+			reject := true
+			if m.Term < r.Term {
+				m.Term = r.Term
+			}
+			if r.Vote == 0 || r.Vote == m.From {
+				reject = false
+				r.Vote = m.From
+			}
+			r.msgs = append(r.msgs, pb.Message{
+				MsgType: pb.MessageType_MsgRequestVoteResponse,
+				From:    r.id,
+				To:      m.From,
+				Term:    m.Term,
+				Reject:  reject,
+			})
+		}
 	case StateCandidate:
+		switch m.MsgType {
+		case pb.MessageType_MsgRequestVoteResponse:
+			if !m.Reject {
+				r.votes[m.From] = true
+			}
+		case pb.MessageType_MsgAppend:
+			r.becomeFollower(m.Term, m.From)
+		case pb.MessageType_MsgHup:
+			r.processMsgHup()
+		}
+		if len(r.votes)*2 > len(r.Prs) {
+			r.becomeLeader()
+		}
 	case StateLeader:
+		switch m.MsgType {
+		case pb.MessageType_MsgBeat:
+			for p := range r.Prs {
+				if r.id == p {
+					continue
+				}
+				r.sendHeartbeat(p)
+			}
+		}
 	}
 	return nil
+}
+
+func (r *Raft) processMsgHup() {
+	r.becomeCandidate()
+	if len(r.Prs) == 1 {
+		r.becomeLeader()
+	} else {
+		for p := range r.Prs {
+			if p == r.id {
+				continue
+			}
+			r.sendAppend(p)
+		}
+	}
 }
 
 // handleAppendEntries handle AppendEntries RPC request
