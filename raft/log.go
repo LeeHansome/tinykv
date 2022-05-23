@@ -131,5 +131,10 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	for _, entry := range l.entries {
+		if entry.Index == i {
+			return entry.Term, nil
+		}
+	}
 	return 0, nil
 }
