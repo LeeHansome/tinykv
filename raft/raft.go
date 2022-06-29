@@ -186,6 +186,7 @@ func newRaft(c *Config) *Raft {
 		return nil
 	}
 	r.Vote = hardState.Vote
+	r.RaftLog.committed = hardState.GetCommit()
 	return r
 }
 
